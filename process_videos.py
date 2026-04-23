@@ -1,4 +1,4 @@
-# File: process_videos_simple.py
+# File: process_videos.py
 import asyncio
 import requests
 import re
@@ -55,13 +55,78 @@ def generate_archive_identifier(title, episode_id):
     acronym = ''.join([word[0] for word in words if word]).upper()
     return f"{acronym}_{episode_id}"
 
+def extract_embed_url_from_js(js_content):
+    """استخراج رابط المشغل من كود JavaScript المشفر"""
+    try:
+        # البحث عن روابط CDN في الكود المشفر
+        cdn_patterns = [
+            r'https://cdnplus\.cyou/embed-[a-zA-Z0-9]+\.html',
+            r'cdnplus\.cyou/embed-[a-zA-Z0-9]+\.html',
+            r'embed-[a-zA-Z0-9]+\.html'
+        ]
+        
+        for pattern in cdn_patterns:
+            matches = re.findall(pattern, js_content)
+            if matches:
+                match = matches[0]
+                if match.startswith('http'):
+                    return match
+                else:
+                    return f"https://cdnplus.cyou/{match}"
+                    
+        # البحث عن روابط مشفرة
+        if 'cdnplus' in js_content and 'embed' in js_content:
+            # البحث عن معرف المشغل
+            id_patterns = [
+                r'embed-([a-zA-Z0-9]+)',
+                r'"embed-([a-zA-Z0-9]+)"',
+                r"'embed-([a-zA-Z0-9]+)'"
+            ]
+            
+            for pattern in id_patterns:
+                id_matches = re.findall(pattern, js_content)
+                if id_matches:
+                    embed_id = id_matches[0]
+                    return f"https://cdnplus.cyou/embed-{embed_id}.html"
+                    
+        return None
+    except Exception as e:
+        print(f"خطأ في استخراج رابط المشغل من JS: {e}")
+        return None
+
 def get_embed_url(post_url):
     """استخراج رابط المشغل من صفحة الحلقة"""
     try:
-        resp = requests.get(post_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        
+        resp = requests.get(post_url, headers=headers, timeout=15)
         resp.raise_for_status()
+        
+        # البحث عن روابط CDN مباشرة
         cdn_links = re.findall(r"https://cdnplus\.cyou/embed-[\w\d]+\.html", resp.text)
-        return cdn_links[0] if cdn_links else None
+        if cdn_links:
+            return cdn_links[0]
+            
+        # البحث عن روابط مشفرة
+        if 'cdnplus' in resp.text and 'embed' in resp.text:
+            embed_url = extract_embed_url_from_js(resp.text)
+            if embed_url:
+                return embed_url
+                
+        # البحث عن eval أو دوال مشفرة
+        if 'eval(' in resp.text or 'function(p,a,c,k,e,d)' in resp.text:
+            print("   [~] تم اكتشاف كود JavaScript مشفر")
+            embed_url = extract_embed_url_from_js(resp.text)
+            if embed_url:
+                return embed_url
+                
+        return None
     except Exception as e:
         print(f"خطأ في استخراج رابط المشغل: {e}")
         return None
@@ -69,27 +134,52 @@ def get_embed_url(post_url):
 def get_m3u8_url(embed_url):
     """استخراج رابط M3U8 من صفحة المشغل"""
     try:
-        resp = requests.get(embed_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Referer": embed_url,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        }
+        
+        resp = requests.get(embed_url, headers=headers, timeout=20)
         resp.raise_for_status()
         
-        # البحث عن رابط M3U8 في الكود
-        m3u8_matches = re.findall(r'(https?://[^\s]*?\.m3u8[^\s]*)', resp.text)
-        master_m3u8 = [url for url in m3u8_matches if 'master' in url.lower()]
+        # البحث عن روابط M3U8 بطرق متعددة
+        patterns = [
+            r'(https?://[^\s]*?master[^\s]*?\.m3u8[^\s]*)',
+            r'(https?://[^\s]*?\.m3u8[^\s]*)',
+            r'"file"\s*:\s*"([^"]*?\.m3u8[^"]*)"',
+            r'sources\s*:\s*\[\s*{\s*"file"\s*:\s*"([^"]*?\.m3u8[^"]*)"',
+        ]
         
-        if master_m3u8:
-            return master_m3u8[0]
-        elif m3u8_matches:
-            return m3u8_matches[0]
-            
+        for pattern in patterns:
+            matches = re.findall(pattern, resp.text, re.IGNORECASE)
+            if matches:
+                m3u8_url = matches[0]
+                if not m3u8_url.startswith('http'):
+                    from urllib.parse import urljoin
+                    m3u8_url = urljoin(embed_url, m3u8_url)
+                print(f"   [+] تم العثور على M3U8: {m3u8_url}")
+                return m3u8_url
+                
+        # البحث في المحتوى ككل
+        if '.m3u8' in resp.text.lower():
+            print("   [~] تم اكتشاف M3U8 في المحتوى")
+            # البحث عن أي رابط يحتوي على m3u8
+            all_urls = re.findall(r'https?://[^\s"\'>]+\.m3u8[^\s"\'>]*', resp.text)
+            if all_urls:
+                return all_urls[0]
+                
+        print("   [!] لم يتم العثور على رابط M3U8")
         return None
     except Exception as e:
         print(f"خطأ في استخراج رابط M3U8: {e}")
         return None
 
 def download_m3u8_video(m3u8_url, output_prefix):
-    """تحميل الفيديو من رابط M3U8 بصيغ متعددة"""
+    """تحميل الفيديو من رابط M3U8 بصيغ متعددة بدون اقتصاص"""
     downloaded_files = []
     formats = [
+        {'height': 1080, 'name': f'{output_prefix}_1080p.mp4'},
         {'height': 720, 'name': f'{output_prefix}_720p.mp4'},
         {'height': 480, 'name': f'{output_prefix}_480p.mp4'},
         {'height': 360, 'name': f'{output_prefix}_360p.mp4'}
@@ -104,15 +194,16 @@ def download_m3u8_video(m3u8_url, output_prefix):
                 '-crf', '23', '-c:a', 'aac',
                 '-vf', f'scale=-1:{fmt["height"]}',
                 '-movflags', '+faststart',
+                '-timeout', '30',
                 fmt['name']
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             if result.returncode == 0 and os.path.exists(fmt['name']):
                 downloaded_files.append(fmt['name'])
                 print(f"[+] تم تنزيل: {fmt['name']}")
             else:
-                print(f"[-] فشل تنزيل: {fmt['name']}")
+                print(f"[-] فشل تنزيل: {fmt['name']} - {result.stderr[:100]}")
                 
         except subprocess.TimeoutExpired:
             print(f"[!] انتهت مهلة تنزيل: {fmt['name']}")
@@ -120,32 +211,6 @@ def download_m3u8_video(m3u8_url, output_prefix):
             print(f"[!] خطأ في تنزيل {fmt['name']}: {e}")
     
     return downloaded_files
-
-def trim_videos(input_files, seconds=10):
-    """اقتطاع الثواني الأولى من الفيديوهات"""
-    trimmed_files = []
-    
-    for file in input_files:
-        output = file.replace('.mp4', '_trimmed.mp4')
-        try:
-            print(f"جاري اقتصاص: {file}")
-            cmd = ['ffmpeg', '-y', '-ss', str(seconds), '-i', file, '-c', 'copy', output]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode == 0 and os.path.exists(output):
-                trimmed_files.append(output)
-                print(f"[+] تم اقتصاص: {output}")
-                try:
-                    os.remove(file)
-                except:
-                    pass
-            else:
-                print(f"[-] فشل اقتصاص: {output}")
-        except subprocess.TimeoutExpired:
-            print(f"[!] انتهت مهلة اقتصاص: {file}")
-        except Exception as e:
-            print(f"[!] خطأ في اقتصاص {file}: {e}")
-    
-    return trimmed_files
 
 def upload_to_archive(identifier, files, access_key, secret_key):
     """رفع الملفات إلى Internet Archive"""
@@ -186,7 +251,8 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
             print(f"   [~] الفيديو موجود مسبقاً: {episode_id}")
             return None, None
 
-        resp = requests.get(post_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
+        print(f"   [>] جاري جلب معلومات الصفحة: {post_url}")
+        resp = requests.get(post_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -196,6 +262,11 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
         embed_url = get_embed_url(post_url)
         if not embed_url:
             print("   [-] لا يوجد مشغل")
+            print("   [~] محاولة إضافية لاستخراج المشغل...")
+            embed_url = extract_embed_url_from_js(resp.text)
+            
+        if not embed_url:
+            print("   [x] فشل استخراج المشغل")
             return None, None
 
         print(f"   [>] جاري استخراج من: {embed_url}")
@@ -203,6 +274,12 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
 
         if not m3u8:
             print("   [x] ما لقيناش m3u8")
+            print("   [~] محاولة إضافية لاستخراج M3U8...")
+            time.sleep(5)
+            m3u8 = get_m3u8_url(embed_url)
+            
+        if not m3u8:
+            print("   [x] ما لقيناش m3u8 حتى بعد المحاولة الإضافية")
             return None, None
 
         print(f"   [+] تم العثور على رابط M3U8: {m3u8}")
@@ -217,15 +294,8 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
             print("   [x] فشل تنزيل الفيديو")
             return None, None
 
-        print("   [>] جاري اقتصاص الفيديوهات...")
-        trimmed_files = trim_videos(downloaded_files, 10)
-        
-        if not trimmed_files:
-            print("   [x] فشل اقتصاص الفيديوهات")
-            return None, None
-
         print("   [>] جاري رفع الفيديوهات إلى الأرشيف...")
-        archive_url = upload_to_archive(archive_identifier, trimmed_files, access_key, secret_key)
+        archive_url = upload_to_archive(archive_identifier, downloaded_files, access_key, secret_key)
         
         if not archive_url:
             print("   [x] فشل رفع الفيديوهات إلى الأرشيف")
@@ -237,25 +307,25 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
         }
 
         available_qualities = []
-        for file in trimmed_files:
+        for file in downloaded_files:
             if '1080p' in file:
                 available_qualities.append({
-                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_1080p_trimmed.mp4", 
+                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_1080p.mp4", 
                     "label": "1080p HD"
                 })
             elif '720p' in file:
                 available_qualities.append({
-                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_720p_trimmed.mp4", 
+                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_720p.mp4", 
                     "label": "720p HD"
                 })
             elif '480p' in file:
                 available_qualities.append({
-                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_480p_trimmed.mp4", 
+                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_480p.mp4", 
                     "label": "480p SD"
                 })
             elif '360p' in file:
                 available_qualities.append({
-                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_360p_trimmed.mp4", 
+                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_360p.mp4", 
                     "label": "360p SD"
                 })
 
@@ -268,7 +338,8 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
             "Post": post_url
         }
 
-        for file in trimmed_files + downloaded_files:
+        # حذف الملفات المؤقتة بعد الرفع
+        for file in downloaded_files:
             try:
                 os.remove(file)
             except:
