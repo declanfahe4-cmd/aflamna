@@ -60,10 +60,14 @@ def get_embed_url(post_url):
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
         }
         
         print(f"   [~] جاري طلب الصفحة: {post_url}")
-        resp = requests.get(post_url, headers=headers, timeout=15)
+        resp = requests.get(post_url, headers=headers, timeout=20)
         resp.raise_for_status()
         
         # البحث عن روابط CDN مباشرة
@@ -91,7 +95,8 @@ def get_m3u8_url_with_playwright(embed_url):
         print(f"   [~] جاري فتح صفحة المشغل مع مراقبة الطلبات: {embed_url}")
         
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            # زيادة مهلة البدء
+            browser = p.chromium.launch(headless=True, timeout=60000)
             page = browser.new_page()
             
             # متغير لتخزين رابط M3U8
@@ -107,11 +112,11 @@ def get_m3u8_url_with_playwright(embed_url):
             # ربط دالة معالجة الطلبات
             page.on("response", handle_response)
             
-            # فتح الصفحة
-            page.goto(embed_url, wait_until="networkidle", timeout=30000)
+            # فتح الصفحة مع مهلة أطول
+            page.goto(embed_url, wait_until="networkidle", timeout=60000)
             
             # انتظار إضافي للتأكد من تحميل جميع الطلبات
-            page.wait_for_timeout(8000)
+            page.wait_for_timeout(15000)
             
             browser.close()
             
@@ -129,38 +134,72 @@ def download_m3u8_video(m3u8_url, output_prefix):
     """تحميل الفيديو من رابط M3U8 بصيغ متعددة بدون اقتصاص"""
     downloaded_files = []
     formats = [
+        {'height': 720, 'name': f'{output_prefix}_720p.mp4'},   # 720p أولاً لأنه الأكثر توافقاً
         {'height': 1080, 'name': f'{output_prefix}_1080p.mp4'},
-        {'height': 720, 'name': f'{output_prefix}_720p.mp4'},
         {'height': 480, 'name': f'{output_prefix}_480p.mp4'},
         {'height': 360, 'name': f'{output_prefix}_360p.mp4'}
     ]
     
+    print(f"   [~] جاري اختبار صحة رابط M3U8...")
+    try:
+        # اختبار الرابط أولاً
+        cmd_test = ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', m3u8_url]
+        result_test = subprocess.run(cmd_test, capture_output=True, text=True, timeout=30)
+        if result_test.returncode == 0 and result_test.stdout.strip():
+            print(f"   [+] رابط M3U8 صالح، المدة: {result_test.stdout.strip()} ثانية")
+        else:
+            print("   [!] قد يكون الرابط غير صالح")
+    except:
+        print("   [~] لم يتم اختبار صحة الرابط")
+    
+    successful_downloads = 0
+    
     for fmt in formats:
         try:
             print(f"جاري تنزيل: {fmt['name']}")
+            # زيادة مهلة FFmpeg وتحسين الإعدادات
             cmd = [
-                'ffmpeg', '-y', '-i', m3u8_url,
-                '-c:v', 'libx264', '-preset', 'fast',
-                '-crf', '23', '-c:a', 'aac',
+                'ffmpeg', '-y', 
+                '-timeout', '60',  # مهلة 60 ثانية
+                '-i', m3u8_url,
+                '-c:v', 'libx264', '-preset', 'ultrafast',  # أسرع ترميز
+                '-crf', '25', '-c:a', 'aac',
                 '-vf', f'scale=-1:{fmt["height"]}',
                 '-movflags', '+faststart',
-                '-timeout', '30',
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '30',
+                '-rw_timeout', '60000000',  # 60 ثانية
                 fmt['name']
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-            if result.returncode == 0 and os.path.exists(fmt['name']):
+            # زيادة مهلة التنفيذ
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)  # 20 دقيقة مهلة
+            if result.returncode == 0 and os.path.exists(fmt['name']) and os.path.getsize(fmt['name']) > 10000:  # أكبر من 10KB
                 downloaded_files.append(fmt['name'])
-                print(f"[+] تم تنزيل: {fmt['name']}")
+                successful_downloads += 1
+                size_mb = os.path.getsize(fmt['name']) / (1024 * 1024)
+                print(f"[+] تم تنزيل: {fmt['name']} ({size_mb:.2f} MB)")
             else:
-                print(f"[-] فشل تنزيل: {fmt['name']} - {result.stderr[:200] if result.stderr else 'No error message'}")
+                print(f"[-] فشل تنزيل: {fmt['name']} - {result.stderr[:300] if result.stderr else 'No error message'}")
                 
         except subprocess.TimeoutExpired:
-            print(f"[!] انتهت مهلة تنزيل: {fmt['name']}")
+            print(f"[!] انتهت مهلة تنزيل: {fmt['name']} (قد يكون التنزيل ناجحاً جزئياً)")
+            # التحقق مما إذا كان الملف موجوداً وله حجم معقول
+            if os.path.exists(fmt['name']) and os.path.getsize(fmt['name']) > 10000:
+                downloaded_files.append(fmt['name'])
+                successful_downloads += 1
+                size_mb = os.path.getsize(fmt['name']) / (1024 * 1024)
+                print(f"[~] تم تنزيل جزء من: {fmt['name']} ({size_mb:.2f} MB)")
         except Exception as e:
             print(f"[!] خطأ في تنزيل {fmt['name']}: {e}")
     
-    return downloaded_files
+    if successful_downloads > 0:
+        print(f"   [+] نجح تنزيل {successful_downloads} ملفات")
+        return downloaded_files
+    else:
+        print("   [x] فشل تنزيل جميع الصيغ")
+        return []
 
 def upload_to_archive(identifier, files, access_key, secret_key):
     """رفع الملفات إلى Internet Archive"""
@@ -172,9 +211,17 @@ def upload_to_archive(identifier, files, access_key, secret_key):
         print(f"جاري رفع الملفات إلى الأرشيف: {identifier}")
         print(f"الملفات المراد رفعها: {files}")
         
+        # التحقق من وجود الملفات
+        valid_files = [f for f in files if os.path.exists(f) and os.path.getsize(f) > 10000]
+        if not valid_files:
+            print("   [!] لا توجد ملفات صالحة للرفع")
+            return None
+            
+        print(f"   [~] الملفات الصالحة للرفع: {valid_files}")
+        
         r = upload(
             identifier,
-            files=files,
+            files=valid_files,
             access_key=access_key,
             secret_key=secret_key,
             verbose=True,
@@ -204,7 +251,7 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
             return None, None
 
         print(f"   [>] جاري جلب معلومات الصفحة: {post_url}")
-        resp = requests.get(post_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=15)
+        resp = requests.get(post_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=20)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -240,6 +287,12 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
         
         if not archive_url:
             print("   [x] فشل رفع الفيديوهات إلى الأرشيف")
+            # حذف الملفات المؤقتة حتى لو فشل الرفع
+            for file in downloaded_files:
+                try:
+                    os.remove(file)
+                except:
+                    pass
             return None, None
 
         json_entry = {
