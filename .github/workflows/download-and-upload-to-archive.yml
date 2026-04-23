@@ -23,7 +23,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -q yt-dlp internetarchive requests beautifulsoup4 pandas
+          pip install -q yt-dlp internetarchive requests beautifulsoup4 pandas playwright
+          playwright install-deps
+          playwright install chromium
           sudo apt-get -qq update
           sudo apt-get -qq install ffmpeg
 
