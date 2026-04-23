@@ -55,45 +55,6 @@ def generate_archive_identifier(title, episode_id):
     acronym = ''.join([word[0] for word in words if word]).upper()
     return f"{acronym}_{episode_id}"
 
-def extract_embed_url_from_js(js_content):
-    """استخراج رابط المشغل من كود JavaScript المشفر"""
-    try:
-        # البحث عن روابط CDN في الكود المشفر
-        cdn_patterns = [
-            r'https://cdnplus\.cyou/embed-[a-zA-Z0-9]+\.html',
-            r'cdnplus\.cyou/embed-[a-zA-Z0-9]+\.html',
-            r'embed-[a-zA-Z0-9]+\.html'
-        ]
-        
-        for pattern in cdn_patterns:
-            matches = re.findall(pattern, js_content)
-            if matches:
-                match = matches[0]
-                if match.startswith('http'):
-                    return match
-                else:
-                    return f"https://cdnplus.cyou/{match}"
-                    
-        # البحث عن روابط مشفرة
-        if 'cdnplus' in js_content and 'embed' in js_content:
-            # البحث عن معرف المشغل
-            id_patterns = [
-                r'embed-([a-zA-Z0-9]+)',
-                r'"embed-([a-zA-Z0-9]+)"',
-                r"'embed-([a-zA-Z0-9]+)'"
-            ]
-            
-            for pattern in id_patterns:
-                id_matches = re.findall(pattern, js_content)
-                if id_matches:
-                    embed_id = id_matches[0]
-                    return f"https://cdnplus.cyou/embed-{embed_id}.html"
-                    
-        return None
-    except Exception as e:
-        print(f"خطأ في استخراج رابط المشغل من JS: {e}")
-        return None
-
 def get_embed_url(post_url):
     """استخراج رابط المشغل من صفحة الحلقة"""
     try:
@@ -105,26 +66,25 @@ def get_embed_url(post_url):
             "Upgrade-Insecure-Requests": "1",
         }
         
+        print(f"   [~] جاري طلب الصفحة: {post_url}")
         resp = requests.get(post_url, headers=headers, timeout=15)
         resp.raise_for_status()
+        
+        print(f"   [~] تم استقبال {len(resp.text)} بايت من البيانات")
         
         # البحث عن روابط CDN مباشرة
         cdn_links = re.findall(r"https://cdnplus\.cyou/embed-[\w\d]+\.html", resp.text)
         if cdn_links:
+            print(f"   [+] تم العثور على روابط CDN: {cdn_links}")
             return cdn_links[0]
             
-        # البحث عن روابط مشفرة
-        if 'cdnplus' in resp.text and 'embed' in resp.text:
-            embed_url = extract_embed_url_from_js(resp.text)
-            if embed_url:
-                return embed_url
-                
-        # البحث عن eval أو دوال مشفرة
-        if 'eval(' in resp.text or 'function(p,a,c,k,e,d)' in resp.text:
-            print("   [~] تم اكتشاف كود JavaScript مشفر")
-            embed_url = extract_embed_url_from_js(resp.text)
-            if embed_url:
-                return embed_url
+        # البحث عن معرفات مشغلة
+        embed_ids = re.findall(r'embed-([a-zA-Z0-9]+)', resp.text)
+        if embed_ids:
+            embed_id = embed_ids[0]
+            full_url = f"https://cdnplus.cyou/embed-{embed_id}.html"
+            print(f"   [+] تم إنشاء رابط مشغل: {full_url}")
+            return full_url
                 
         return None
     except Exception as e:
@@ -132,44 +92,70 @@ def get_embed_url(post_url):
         return None
 
 def get_m3u8_url(embed_url):
-    """استخراج رابط M3U8 من صفحة المشغل"""
+    """استخراج رابط M3U8 من صفحة المشغل بطرق متعددة"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Referer": embed_url,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
         }
         
+        print(f"   [~] جاري طلب صفحة المشغل: {embed_url}")
         resp = requests.get(embed_url, headers=headers, timeout=20)
         resp.raise_for_status()
         
-        # البحث عن روابط M3U8 بطرق متعددة
+        content = resp.text
+        print(f"   [~] تم استقبال {len(content)} بايت من صفحة المشغل")
+        
+        # طباعة جزء من المحتوى للتصحيح (الأول 1000 حرف)
+        preview_content = content[:1000]
+        print(f"   [~] معاينة المحتوى: {preview_content}")
+        
+        # طرق متعددة لاستخراج M3U8
         patterns = [
-            r'(https?://[^\s]*?master[^\s]*?\.m3u8[^\s]*)',
-            r'(https?://[^\s]*?\.m3u8[^\s]*)',
+            # أنماط مباشرة
+            r'(https?://[^\s"\']*master[^\s"\']*\.m3u8[^\s"\']*)',
+            r'(https?://[^\s"\']*\.m3u8[^\s"\']*\?[^"\']*)',
+            r'(https?://[^\s"\']*\.m3u8[^\s"\']*)',
+            
+            # أنماط في سياق JavaScript
             r'"file"\s*:\s*"([^"]*?\.m3u8[^"]*)"',
+            r"'file'\s*:\s*'([^']*?\.m3u8[^']*)'",
             r'sources\s*:\s*\[\s*{\s*"file"\s*:\s*"([^"]*?\.m3u8[^"]*)"',
+            
+            # أنماط عامة
+            r'url\s*:\s*"([^"]*?\.m3u8[^"]*)"',
+            r'"([^"]*?master\.m3u8[^"]*)"',
         ]
         
-        for pattern in patterns:
-            matches = re.findall(pattern, resp.text, re.IGNORECASE)
+        # البحث عن جميع الأنماط
+        for i, pattern in enumerate(patterns):
+            matches = re.findall(pattern, content, re.IGNORECASE)
             if matches:
+                print(f"   [+] تم العثور على مطابقات بالنمط {i+1}: {matches[:3]}")  # عرض أول 3 مطابقات
                 m3u8_url = matches[0]
                 if not m3u8_url.startswith('http'):
                     from urllib.parse import urljoin
                     m3u8_url = urljoin(embed_url, m3u8_url)
-                print(f"   [+] تم العثور على M3U8: {m3u8_url}")
+                print(f"   [+] رابط M3U8 النهائي: {m3u8_url}")
                 return m3u8_url
-                
-        # البحث في المحتوى ككل
-        if '.m3u8' in resp.text.lower():
-            print("   [~] تم اكتشاف M3U8 في المحتوى")
-            # البحث عن أي رابط يحتوي على m3u8
-            all_urls = re.findall(r'https?://[^\s"\'>]+\.m3u8[^\s"\'>]*', resp.text)
-            if all_urls:
-                return all_urls[0]
-                
-        print("   [!] لم يتم العثور على رابط M3U8")
+        
+        # البحث عن أي رابط يحتوي على m3u8
+        all_m3u8_urls = re.findall(r'https?://[^\s"\'>]+\.m3u8[^\s"\'>]*', content)
+        if all_m3u8_urls:
+            print(f"   [+] تم العثور على روابط M3U8 عامة: {all_m3u8_urls[:3]}")
+            return all_m3u8_urls[0]
+            
+        # البحث في محتوى JavaScript المشفر
+        if 'eval(' in content or 'function(' in content:
+            print("   [~] تم اكتشاف كود JavaScript، البحث في المحتوى المشفر...")
+            # البحث عن أي شيء يشبه رابط
+            potential_urls = re.findall(r'[a-zA-Z0-9\-_]+\.m3u8', content)
+            if potential_urls:
+                print(f"   [~] روابط محتملة: {potential_urls[:5]}")
+        
+        print("   [!] لم يتم العثور على رابط M3U8 بعد تجربة جميع الأنماط")
         return None
     except Exception as e:
         print(f"خطأ في استخراج رابط M3U8: {e}")
@@ -184,6 +170,18 @@ def download_m3u8_video(m3u8_url, output_prefix):
         {'height': 480, 'name': f'{output_prefix}_480p.mp4'},
         {'height': 360, 'name': f'{output_prefix}_360p.mp4'}
     ]
+    
+    # فحص جودة M3U8 أولاً
+    try:
+        print("   [~] فحص جودة M3U8...")
+        cmd_check = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', m3u8_url]
+        result_check = subprocess.run(cmd_check, capture_output=True, text=True, timeout=30)
+        if result_check.returncode == 0:
+            print("   [+] M3U8 URL يبدو صالحاً")
+        else:
+            print("   [!] M3U8 URL قد يكون غير صالح")
+    except:
+        pass
     
     for fmt in formats:
         try:
@@ -203,7 +201,7 @@ def download_m3u8_video(m3u8_url, output_prefix):
                 downloaded_files.append(fmt['name'])
                 print(f"[+] تم تنزيل: {fmt['name']}")
             else:
-                print(f"[-] فشل تنزيل: {fmt['name']} - {result.stderr[:100]}")
+                print(f"[-] فشل تنزيل: {fmt['name']} - {result.stderr[:200] if result.stderr else 'No error message'}")
                 
         except subprocess.TimeoutExpired:
             print(f"[!] انتهت مهلة تنزيل: {fmt['name']}")
@@ -220,6 +218,8 @@ def upload_to_archive(identifier, files, access_key, secret_key):
         identifier = identifier.replace(' ', '_').replace('-', '_')
         
         print(f"جاري رفع الملفات إلى الأرشيف: {identifier}")
+        print(f"الملفات المراد رفعها: {files}")
+        
         r = upload(
             identifier,
             files=files,
@@ -262,11 +262,6 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
         embed_url = get_embed_url(post_url)
         if not embed_url:
             print("   [-] لا يوجد مشغل")
-            print("   [~] محاولة إضافية لاستخراج المشغل...")
-            embed_url = extract_embed_url_from_js(resp.text)
-            
-        if not embed_url:
-            print("   [x] فشل استخراج المشغل")
             return None, None
 
         print(f"   [>] جاري استخراج من: {embed_url}")
@@ -350,6 +345,8 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
 
     except Exception as e:
         print(f"   [!] خطأ في معالجة {post_url}: {e}")
+        import traceback
+        traceback.print_exc()
         return None, None
 
 def main(links_file):
@@ -407,4 +404,6 @@ if __name__ == "__main__":
         main(links_file)
     except Exception as e:
         print(f"خطأ عام في التشغيل: {e}")
+        import traceback
+        traceback.print_exc()
         raise
