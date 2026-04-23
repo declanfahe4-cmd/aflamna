@@ -1,0 +1,43 @@
+# File: .github/workflows/download-and-upload-to-archive.yml
+name: Download M3U8 and Upload to Archive
+
+on:
+  workflow_dispatch:
+    inputs:
+      links_file:
+        description: 'Links file name (default: links.txt)'
+        required: false
+        default: 'links.txt'
+
+jobs:
+  download-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install -q yt-dlp internetarchive requests beautifulsoup4 pandas
+          sudo apt-get -qq update
+          sudo apt-get -qq install ffmpeg
+
+      - name: Download and process videos
+        env:
+          IA_ACCESS_KEY: ${{ secrets.IA_ACCESS_KEY }}
+          IA_SECRET_KEY: ${{ secrets.IA_SECRET_KEY }}
+        run: |
+          python process_videos.py "${{ github.event.inputs.links_file || 'links.txt' }}"
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+          git add data.json results.csv *.html
+          git commit -m "Update video data and HTML" || echo "No changes to commit"
+          git push
