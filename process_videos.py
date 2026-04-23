@@ -7,7 +7,7 @@ import json
 import subprocess
 import os
 from bs4 import BeautifulSoup
-import urllib.parse
+from playwright.sync_api import sync_playwright
 import time
 
 def load_links(file_path):
@@ -60,22 +60,16 @@ def get_embed_url(post_url):
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
         }
         
         print(f"   [~] جاري طلب الصفحة: {post_url}")
         resp = requests.get(post_url, headers=headers, timeout=15)
         resp.raise_for_status()
         
-        print(f"   [~] تم استقبال {len(resp.text)} بايت من البيانات")
-        
         # البحث عن روابط CDN مباشرة
         cdn_links = re.findall(r"https://cdnplus\.cyou/embed-[\w\d]+\.html", resp.text)
         if cdn_links:
-            print(f"   [+] تم العثور على روابط CDN: {cdn_links}")
+            print(f"   [+] تم العثور على روابط CDN: {cdn_links[0]}")
             return cdn_links[0]
             
         # البحث عن معرفات مشغلة
@@ -91,74 +85,44 @@ def get_embed_url(post_url):
         print(f"خطأ في استخراج رابط المشغل: {e}")
         return None
 
-def get_m3u8_url(embed_url):
-    """استخراج رابط M3U8 من صفحة المشغل بطرق متعددة"""
+def get_m3u8_url_with_playwright(embed_url):
+    """استخراج رابط M3U8 باستخدام Playwright لمراقبة الطلبات الشبكية"""
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Referer": embed_url,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
+        print(f"   [~] جاري فتح صفحة المشغل مع مراقبة الطلبات: {embed_url}")
         
-        print(f"   [~] جاري طلب صفحة المشغل: {embed_url}")
-        resp = requests.get(embed_url, headers=headers, timeout=20)
-        resp.raise_for_status()
-        
-        content = resp.text
-        print(f"   [~] تم استقبال {len(content)} بايت من صفحة المشغل")
-        
-        # طباعة جزء من المحتوى للتصحيح (الأول 1000 حرف)
-        preview_content = content[:1000]
-        print(f"   [~] معاينة المحتوى: {preview_content}")
-        
-        # طرق متعددة لاستخراج M3U8
-        patterns = [
-            # أنماط مباشرة
-            r'(https?://[^\s"\']*master[^\s"\']*\.m3u8[^\s"\']*)',
-            r'(https?://[^\s"\']*\.m3u8[^\s"\']*\?[^"\']*)',
-            r'(https?://[^\s"\']*\.m3u8[^\s"\']*)',
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
             
-            # أنماط في سياق JavaScript
-            r'"file"\s*:\s*"([^"]*?\.m3u8[^"]*)"',
-            r"'file'\s*:\s*'([^']*?\.m3u8[^']*)'",
-            r'sources\s*:\s*\[\s*{\s*"file"\s*:\s*"([^"]*?\.m3u8[^"]*)"',
+            # متغير لتخزين رابط M3U8
+            m3u8_url = None
             
-            # أنماط عامة
-            r'url\s*:\s*"([^"]*?\.m3u8[^"]*)"',
-            r'"([^"]*?master\.m3u8[^"]*)"',
-        ]
-        
-        # البحث عن جميع الأنماط
-        for i, pattern in enumerate(patterns):
-            matches = re.findall(pattern, content, re.IGNORECASE)
-            if matches:
-                print(f"   [+] تم العثور على مطابقات بالنمط {i+1}: {matches[:3]}")  # عرض أول 3 مطابقات
-                m3u8_url = matches[0]
-                if not m3u8_url.startswith('http'):
-                    from urllib.parse import urljoin
-                    m3u8_url = urljoin(embed_url, m3u8_url)
-                print(f"   [+] رابط M3U8 النهائي: {m3u8_url}")
+            # دالة لمعالجة الطلبات الشبكية
+            def handle_response(response):
+                nonlocal m3u8_url
+                if ".m3u8" in response.url and "master" in response.url:
+                    m3u8_url = response.url
+                    print(f"   [+] تم التقاط رابط M3U8: {m3u8_url}")
+            
+            # ربط دالة معالجة الطلبات
+            page.on("response", handle_response)
+            
+            # فتح الصفحة
+            page.goto(embed_url, wait_until="networkidle", timeout=30000)
+            
+            # انتظار إضافي للتأكد من تحميل جميع الطلبات
+            page.wait_for_timeout(8000)
+            
+            browser.close()
+            
+            if m3u8_url:
                 return m3u8_url
-        
-        # البحث عن أي رابط يحتوي على m3u8
-        all_m3u8_urls = re.findall(r'https?://[^\s"\'>]+\.m3u8[^\s"\'>]*', content)
-        if all_m3u8_urls:
-            print(f"   [+] تم العثور على روابط M3U8 عامة: {all_m3u8_urls[:3]}")
-            return all_m3u8_urls[0]
-            
-        # البحث في محتوى JavaScript المشفر
-        if 'eval(' in content or 'function(' in content:
-            print("   [~] تم اكتشاف كود JavaScript، البحث في المحتوى المشفر...")
-            # البحث عن أي شيء يشبه رابط
-            potential_urls = re.findall(r'[a-zA-Z0-9\-_]+\.m3u8', content)
-            if potential_urls:
-                print(f"   [~] روابط محتملة: {potential_urls[:5]}")
-        
-        print("   [!] لم يتم العثور على رابط M3U8 بعد تجربة جميع الأنماط")
-        return None
+            else:
+                print("   [!] لم يتم العثور على رابط M3U8 في الطلبات الشبكية")
+                return None
+                
     except Exception as e:
-        print(f"خطأ في استخراج رابط M3U8: {e}")
+        print(f"خطأ في استخراج رابط M3U8 باستخدام Playwright: {e}")
         return None
 
 def download_m3u8_video(m3u8_url, output_prefix):
@@ -170,18 +134,6 @@ def download_m3u8_video(m3u8_url, output_prefix):
         {'height': 480, 'name': f'{output_prefix}_480p.mp4'},
         {'height': 360, 'name': f'{output_prefix}_360p.mp4'}
     ]
-    
-    # فحص جودة M3U8 أولاً
-    try:
-        print("   [~] فحص جودة M3U8...")
-        cmd_check = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', m3u8_url]
-        result_check = subprocess.run(cmd_check, capture_output=True, text=True, timeout=30)
-        if result_check.returncode == 0:
-            print("   [+] M3U8 URL يبدو صالحاً")
-        else:
-            print("   [!] M3U8 URL قد يكون غير صالح")
-    except:
-        pass
     
     for fmt in formats:
         try:
@@ -264,17 +216,11 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
             print("   [-] لا يوجد مشغل")
             return None, None
 
-        print(f"   [>] جاري استخراج من: {embed_url}")
-        m3u8 = get_m3u8_url(embed_url)
+        print(f"   [>] جاري استخراج M3U8 من: {embed_url}")
+        m3u8 = get_m3u8_url_with_playwright(embed_url)
 
         if not m3u8:
             print("   [x] ما لقيناش m3u8")
-            print("   [~] محاولة إضافية لاستخراج M3U8...")
-            time.sleep(5)
-            m3u8 = get_m3u8_url(embed_url)
-            
-        if not m3u8:
-            print("   [x] ما لقيناش m3u8 حتى بعد المحاولة الإضافية")
             return None, None
 
         print(f"   [+] تم العثور على رابط M3U8: {m3u8}")
