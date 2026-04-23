@@ -1,4 +1,4 @@
-# File: process_videos.py
+#كود جيميني الأول
 import asyncio
 import requests
 import re
@@ -29,31 +29,36 @@ def load_existing_data():
     csv_data = []
     
     try:
-        with open("data.json", "r", encoding="utf-8") as f:
-            json_data = json.load(f)
-    except FileNotFoundError:
-        pass
+        if os.path.exists("data.json") and os.path.getsize("data.json") > 0:
+            with open("data.json", "r", encoding="utf-8") as f:
+                json_data = json.load(f)
     except Exception as e:
         print(f"خطأ في تحميل data.json: {e}")
     
     try:
-        df = pd.read_csv("results.csv", encoding="utf-8")
-        csv_data = df.to_dict('records')
-    except FileNotFoundError:
-        pass
+        if os.path.exists("results.csv"):
+            df = pd.read_csv("results.csv", encoding="utf-8")
+            csv_data = df.to_dict('records')
     except Exception as e:
         print(f"خطأ في تحميل results.csv: {e}")
     
     return json_data, csv_data
 
 def generate_archive_identifier(title, episode_id):
-    """توليد اسم معرف للأرشيف من أول حرف من كل كلمة + رقم الحلقة"""
-    words = re.findall(r'[a-zA-Z\u0600-\u06FF]+', title)
-    if not words:
-        return f"video_{episode_id}"
+    """توليد اسم معرف للأرشيف متوافق مع شروط Internet Archive"""
+    # استبدال أي حرف غير إنجليزي أو غير رقمي بشرطة سفلية
+    clean_id = re.sub(r'[^a-zA-Z0-9_.-]', '_', episode_id)
     
-    acronym = ''.join([word[0] for word in words if word]).upper()
-    return f"{acronym}_{episode_id}"
+    # يجب أن يبدأ بحرف إنجليزي أو رقم
+    if not clean_id or not clean_id[0].isalnum():
+        clean_id = "v_" + clean_id
+        
+    # التأكد من أن الطول لا يقل عن 5 أحرف (حسب متطلبات IA)
+    while len(clean_id) < 5:
+        clean_id += "_vid"
+        
+    # اقتطاع الاسم إذا تجاوز 100 حرف
+    return clean_id[:100]
 
 def get_embed_url(post_url):
     """استخراج رابط المشغل من صفحة الحلقة"""
@@ -95,29 +100,19 @@ def get_m3u8_url_with_playwright(embed_url):
         print(f"   [~] جاري فتح صفحة المشغل مع مراقبة الطلبات: {embed_url}")
         
         with sync_playwright() as p:
-            # زيادة مهلة البدء
             browser = p.chromium.launch(headless=True, timeout=60000)
             page = browser.new_page()
-            
-            # متغير لتخزين رابط M3U8
             m3u8_url = None
             
-            # دالة لمعالجة الطلبات الشبكية
             def handle_response(response):
                 nonlocal m3u8_url
                 if ".m3u8" in response.url and "master" in response.url:
                     m3u8_url = response.url
                     print(f"   [+] تم التقاط رابط M3U8: {m3u8_url}")
             
-            # ربط دالة معالجة الطلبات
             page.on("response", handle_response)
-            
-            # فتح الصفحة مع مهلة أطول
             page.goto(embed_url, wait_until="networkidle", timeout=60000)
-            
-            # انتظار إضافي للتأكد من تحميل جميع الطلبات
             page.wait_for_timeout(15000)
-            
             browser.close()
             
             if m3u8_url:
@@ -134,7 +129,7 @@ def download_m3u8_video(m3u8_url, output_prefix):
     """تحميل الفيديو من رابط M3U8 بصيغ متعددة بدون اقتصاص"""
     downloaded_files = []
     formats = [
-        {'height': 480, 'name': f'{output_prefix}_480p.mp4'},   # 480p أولاً لأنه أقل استهلاكاً للموارد
+        {'height': 480, 'name': f'{output_prefix}_480p.mp4'},
         {'height': 720, 'name': f'{output_prefix}_720p.mp4'},
         {'height': 360, 'name': f'{output_prefix}_360p.mp4'},
         {'height': 1080, 'name': f'{output_prefix}_1080p.mp4'}
@@ -142,7 +137,6 @@ def download_m3u8_video(m3u8_url, output_prefix):
     
     print(f"   [~] جاري اختبار صحة رابط M3U8...")
     try:
-        # اختبار الرابط أولاً
         cmd_test = ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', m3u8_url]
         result_test = subprocess.run(cmd_test, capture_output=True, text=True, timeout=30)
         if result_test.returncode == 0 and result_test.stdout.strip():
@@ -157,11 +151,9 @@ def download_m3u8_video(m3u8_url, output_prefix):
     for fmt in formats:
         try:
             print(f"جاري تنزيل: {fmt['name']}")
-            
-            # محاولة بسيطة أولاً
             cmd_simple = [
                 'ffmpeg', '-y', '-i', m3u8_url,
-                '-c', 'copy',  # نسخ بدون ترميز لتوفير الوقت
+                '-c', 'copy',
                 '-movflags', '+faststart',
                 '-timeout', '30',
                 fmt['name']
@@ -175,7 +167,6 @@ def download_m3u8_video(m3u8_url, output_prefix):
                 size_mb = os.path.getsize(fmt['name']) / (1024 * 1024)
                 print(f"[+] تم تنزيل (نسخ مباشر): {fmt['name']} ({size_mb:.2f} MB)")
             else:
-                # إذا فشل النسخ المباشر، نحاول الترميز
                 print(f"   [~] محاولة الترميز لـ: {fmt['name']}")
                 cmd_encode = [
                     'ffmpeg', '-y', 
@@ -205,7 +196,6 @@ def download_m3u8_video(m3u8_url, output_prefix):
                     
         except subprocess.TimeoutExpired:
             print(f"[!] انتهت مهلة تنزيل: {fmt['name']}")
-            # التحقق مما إذا كان الملف موجوداً وله حجم معقول
             if os.path.exists(fmt['name']) and os.path.getsize(fmt['name']) > 10000:
                 downloaded_files.append(fmt['name'])
                 successful_downloads += 1
@@ -226,12 +216,9 @@ def upload_to_archive(identifier, files, access_key, secret_key):
     try:
         from internetarchive import upload
         
-        identifier = identifier.replace(' ', '_').replace('-', '_')
-        
         print(f"جاري رفع الملفات إلى الأرشيف: {identifier}")
         print(f"الملفات المراد رفعها: {files}")
         
-        # التحقق من وجود الملفات
         valid_files = [f for f in files if os.path.exists(f) and os.path.getsize(f) > 10000]
         if not valid_files:
             print("   [!] لا توجد ملفات صالحة للرفع")
@@ -265,103 +252,85 @@ def process_single_video(post_url, access_key, secret_key, existing_json_data):
     try:
         episode_id = post_url.split('/')[-1]
         print(f"\n[*] معالجة: {episode_id}")
-
         if episode_id in existing_json_data:
             print(f"   [~] الفيديو موجود مسبقاً: {episode_id}")
             return None, None
-
+            
         print(f"   [>] جاري جلب معلومات الصفحة: {post_url}")
         resp = requests.get(post_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=20)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-
         title = soup.find("title").text.strip() if soup.find("title") else episode_id
         print(f"   [>] العنوان: {title}")
-
+        
         embed_url = get_embed_url(post_url)
         if not embed_url:
             print("   [-] لا يوجد مشغل")
             return None, None
-
+            
         print(f"   [>] جاري استخراج M3U8 من: {embed_url}")
         m3u8 = get_m3u8_url_with_playwright(embed_url)
-
         if not m3u8:
             print("   [x] ما لقيناش m3u8")
             return None, None
-
+            
         print(f"   [+] تم العثور على رابط M3U8: {m3u8}")
-
         archive_identifier = generate_archive_identifier(title, episode_id)
         print(f"   [>] معرف الأرشيف: {archive_identifier}")
-
         print("   [>] جاري تنزيل الفيديو...")
         downloaded_files = download_m3u8_video(m3u8, f"temp_{episode_id}")
         
         if not downloaded_files:
             print("   [x] فشل تنزيل الفيديو")
             return None, None
-
+            
         print("   [>] جاري رفع الفيديوهات إلى الأرشيف...")
         archive_url = upload_to_archive(archive_identifier, downloaded_files, access_key, secret_key)
         
         if not archive_url:
             print("   [x] فشل رفع الفيديوهات إلى الأرشيف")
-            # حذف الملفات المؤقتة حتى لو فشل الرفع
             for file in downloaded_files:
                 try:
                     os.remove(file)
                 except:
                     pass
             return None, None
-
+            
         json_entry = {
             "title": title,
             "sources": []
         }
-
+        
         available_qualities = []
+        # الإصلاح هنا: استخدام رابط archive.org مباشر بدلاً من سيرفر محدد
         for file in downloaded_files:
+            filename = os.path.basename(file)
             if '1080p' in file:
-                available_qualities.append({
-                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_1080p.mp4", 
-                    "label": "1080p HD"
-                })
+                available_qualities.append({"file": f"https://archive.org/download/{archive_identifier}/{filename}", "label": "1080p HD"})
             elif '720p' in file:
-                available_qualities.append({
-                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_720p.mp4", 
-                    "label": "720p HD"
-                })
+                available_qualities.append({"file": f"https://archive.org/download/{archive_identifier}/{filename}", "label": "720p HD"})
             elif '480p' in file:
-                available_qualities.append({
-                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_480p.mp4", 
-                    "label": "480p SD"
-                })
+                available_qualities.append({"file": f"https://archive.org/download/{archive_identifier}/{filename}", "label": "480p SD"})
             elif '360p' in file:
-                available_qualities.append({
-                    "file": f"https://ia600509.us.archive.org/18/items/{archive_identifier}/temp_{episode_id}_360p.mp4", 
-                    "label": "360p SD"
-                })
-
+                available_qualities.append({"file": f"https://archive.org/download/{archive_identifier}/{filename}", "label": "360p SD"})
+                
         json_entry["sources"] = available_qualities
-
         csv_entry = {
             "ID": episode_id,
             "Title": title,
             "Archive_URL": archive_url,
             "Post": post_url
         }
-
-        # حذف الملفات المؤقتة بعد الرفع
+        
         for file in downloaded_files:
             try:
                 os.remove(file)
             except:
                 pass
-
+                
         print(f"   [+] تم الانتهاء من معالجة: {episode_id}")
         return episode_id, {"json": json_entry, "csv": csv_entry}
-
+        
     except Exception as e:
         print(f"   [!] خطأ في معالجة {post_url}: {e}")
         import traceback
@@ -373,22 +342,21 @@ def main(links_file):
     if not post_links:
         print("لا توجد روابط للمعالجة!")
         return
-
+        
     existing_json_data, existing_csv_data = load_existing_data()
     print(f"البيانات الموجودة: {len(existing_json_data)} فيديو")
-
+    
     access_key = os.environ.get('IA_ACCESS_KEY')
     secret_key = os.environ.get('IA_SECRET_KEY')
     
     if not access_key or not secret_key:
         print("خطأ: مفاتيح الوصول إلى الأرشيف غير متوفرة!")
         return
-
+        
     print("--- بدء عملية المعالجة ---")
-
     new_entries = {}
     new_csv_entries = []
-
+    
     for post_url in post_links:
         episode_id, entry_data = process_single_video(post_url, access_key, secret_key, existing_json_data)
         
@@ -399,21 +367,20 @@ def main(links_file):
                 print(f"[+] تمت إضافة: {episode_id}")
             else:
                 print(f"[~] تم تجاهل (موجود مسبقاً): {episode_id}")
-
+                
     final_json_data = existing_json_data.copy()
     final_json_data.update(new_entries)
-
     final_csv_data = existing_csv_data + new_csv_entries
-
+    
     if final_json_data:
         with open("data.json", "w", encoding="utf-8") as f:
             json.dump(final_json_data, f, ensure_ascii=False, indent=2)
         print(f"\n[تم] تحديث data.json - إجمالي الفيديوهات: {len(final_json_data)}")
-
+        
     if final_csv_data:
         pd.DataFrame(final_csv_data).to_csv("results.csv", index=False, encoding="utf-8-sig")
         print(f"[تم] تحديث results.csv - إجمالي السجلات: {len(final_csv_data)}")
-
+        
     print("\n--- انتهى التنفيذ ---")
 
 if __name__ == "__main__":
