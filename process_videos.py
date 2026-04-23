@@ -134,10 +134,10 @@ def download_m3u8_video(m3u8_url, output_prefix):
     """تحميل الفيديو من رابط M3U8 بصيغ متعددة بدون اقتصاص"""
     downloaded_files = []
     formats = [
-        {'height': 720, 'name': f'{output_prefix}_720p.mp4'},   # 720p أولاً لأنه الأكثر توافقاً
-        {'height': 1080, 'name': f'{output_prefix}_1080p.mp4'},
-        {'height': 480, 'name': f'{output_prefix}_480p.mp4'},
-        {'height': 360, 'name': f'{output_prefix}_360p.mp4'}
+        {'height': 480, 'name': f'{output_prefix}_480p.mp4'},   # 480p أولاً لأنه أقل استهلاكاً للموارد
+        {'height': 720, 'name': f'{output_prefix}_720p.mp4'},
+        {'height': 360, 'name': f'{output_prefix}_360p.mp4'},
+        {'height': 1080, 'name': f'{output_prefix}_1080p.mp4'}
     ]
     
     print(f"   [~] جاري اختبار صحة رابط M3U8...")
@@ -157,34 +157,54 @@ def download_m3u8_video(m3u8_url, output_prefix):
     for fmt in formats:
         try:
             print(f"جاري تنزيل: {fmt['name']}")
-            # زيادة مهلة FFmpeg وتحسين الإعدادات
-            cmd = [
-                'ffmpeg', '-y', 
-                '-timeout', '60',  # مهلة 60 ثانية
-                '-i', m3u8_url,
-                '-c:v', 'libx264', '-preset', 'ultrafast',  # أسرع ترميز
-                '-crf', '25', '-c:a', 'aac',
-                '-vf', f'scale=-1:{fmt["height"]}',
+            
+            # محاولة بسيطة أولاً
+            cmd_simple = [
+                'ffmpeg', '-y', '-i', m3u8_url,
+                '-c', 'copy',  # نسخ بدون ترميز لتوفير الوقت
                 '-movflags', '+faststart',
-                '-reconnect', '1',
-                '-reconnect_streamed', '1',
-                '-reconnect_delay_max', '30',
-                '-rw_timeout', '60000000',  # 60 ثانية
+                '-timeout', '30',
                 fmt['name']
             ]
             
-            # زيادة مهلة التنفيذ
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)  # 20 دقيقة مهلة
-            if result.returncode == 0 and os.path.exists(fmt['name']) and os.path.getsize(fmt['name']) > 10000:  # أكبر من 10KB
+            result_simple = subprocess.run(cmd_simple, capture_output=True, text=True, timeout=1800)
+            
+            if result_simple.returncode == 0 and os.path.exists(fmt['name']) and os.path.getsize(fmt['name']) > 10000:
                 downloaded_files.append(fmt['name'])
                 successful_downloads += 1
                 size_mb = os.path.getsize(fmt['name']) / (1024 * 1024)
-                print(f"[+] تم تنزيل: {fmt['name']} ({size_mb:.2f} MB)")
+                print(f"[+] تم تنزيل (نسخ مباشر): {fmt['name']} ({size_mb:.2f} MB)")
             else:
-                print(f"[-] فشل تنزيل: {fmt['name']} - {result.stderr[:300] if result.stderr else 'No error message'}")
+                # إذا فشل النسخ المباشر، نحاول الترميز
+                print(f"   [~] محاولة الترميز لـ: {fmt['name']}")
+                cmd_encode = [
+                    'ffmpeg', '-y', 
+                    '-i', m3u8_url,
+                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+                    '-c:a', 'aac', '-b:a', '128k',
+                    '-vf', f'scale=-1:{fmt["height"]}:flags=lanczos',
+                    '-movflags', '+faststart',
+                    '-reconnect', '1', '-reconnect_at_eof', '1',
+                    '-reconnect_streamed', '1', '-reconnect_delay_max', '30',
+                    '-rw_timeout', '60000000',
+                    '-analyzeduration', '2147483647',
+                    '-probesize', '2147483647',
+                    fmt['name']
+                ]
                 
+                result_encode = subprocess.run(cmd_encode, capture_output=True, text=True, timeout=3600)
+                
+                if result_encode.returncode == 0 and os.path.exists(fmt['name']) and os.path.getsize(fmt['name']) > 10000:
+                    downloaded_files.append(fmt['name'])
+                    successful_downloads += 1
+                    size_mb = os.path.getsize(fmt['name']) / (1024 * 1024)
+                    print(f"[+] تم تنزيل (ترميز): {fmt['name']} ({size_mb:.2f} MB)")
+                else:
+                    error_msg = result_encode.stderr if result_encode.stderr else "No detailed error"
+                    print(f"[-] فشل تنزيل: {fmt['name']} - Error: {error_msg[:500]}")
+                    
         except subprocess.TimeoutExpired:
-            print(f"[!] انتهت مهلة تنزيل: {fmt['name']} (قد يكون التنزيل ناجحاً جزئياً)")
+            print(f"[!] انتهت مهلة تنزيل: {fmt['name']}")
             # التحقق مما إذا كان الملف موجوداً وله حجم معقول
             if os.path.exists(fmt['name']) and os.path.getsize(fmt['name']) > 10000:
                 downloaded_files.append(fmt['name'])
