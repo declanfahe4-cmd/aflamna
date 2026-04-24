@@ -15,5 +15,22 @@
         "label": "720p HD"
       }
     ]
+  },
+  "esref-ruya-s01e04": {
+    "title": "مسلسل حلم اشرف الحلقة 4",
+    "sources": [
+      {
+        "file": "https://archive.org/download/esref-ruya-s01e04/temp_esref-ruya-s01e04_360p.mp4",
+        "label": "360p SD"
+      },
+      {
+        "file": "https://archive.org/download/esref-ruya-s01e04/temp_esref-ruya-s01e04_480p.mp4",
+        "label": "480p SD"
+      },
+      {
+        "file": "https://archive.org/download/esref-ruya-s01e04/temp_esref-ruya-s01e04_720p.mp4",
+        "label": "720p HD"
+      }
+    ]
   }
 }
